@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>AMG8833 — Mapa de calor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: sans-serif; background: #1a1a2e; color: #eee; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 20px; }
+  h1 { font-size: 18px; font-weight: 500; color: #aaa; }
+  #canvas { image-rendering: pixelated; border-radius: 12px; width: 400px; height: 400px; }
+  .controls { display: flex; gap: 12px; }
+  button { padding: 10px 24px; border-radius: 8px; border: none; font-size: 14px; cursor: pointer; font-weight: 500; transition: opacity .2s; }
+  button:hover { opacity: 0.85; }
+  #btn-connect { background: #4361ee; color: white; }
+  #btn-disconnect { background: #e63946; color: white; display: none; }
+  .stats { display: flex; gap: 32px; }
+  .stat { text-align: center; }
+  .stat .val { font-size: 26px; font-weight: 500; }
+  .stat .lbl { font-size: 11px; color: #888; margin-top: 2px; }
+  #tmin .val { color: #48cae4; }
+  #tmax .val { color: #e63946; }
+  #tavg .val { color: #f9c74f; }
+  .legend { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #888; }
+  .legend-bar { width: 200px; height: 12px; border-radius: 6px; background: linear-gradient(to right, #0466c8, #48cae4, #52b788, #f9c74f, #f3722c, #e63946); }
+  #status { font-size: 12px; color: #666; }
+  #status.ok { color: #52b788; }
+  #status.err { color: #e63946; }
+</style>
+</head>
+<body>
+<h1>AMG8833 — Mapa de calor en tiempo real</h1>
+
+<canvas id="canvas" width="8" height="8"></canvas>
+
+<div class="stats">
+  <div class="stat" id="tmin"><div class="val" id="v-min">--</div><div class="lbl">mínima °C</div></div>
+  <div class="stat" id="tavg"><div class="val" id="v-avg">--</div><div class="lbl">promedio °C</div></div>
+  <div class="stat" id="tmax"><div class="val" id="v-max">--</div><div class="lbl">máxima °C</div></div>
+</div>
+
+<div class="legend">
+  <span>frío</span>
+  <div class="legend-bar"></div>
+  <span>caliente</span>
+</div>
+
+<div class="controls">
+  <button id="btn-connect" onclick="conectar()">Conectar ESP32</button>
+  <button id="btn-disconnect" onclick="desconectar()">Desconectar</button>
+</div>
+
+<div id="status">Esperando conexión...</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let port, reader, running = false;
+
+function tempToColor(t, min, max) {
+  const ratio = Math.max(0, Math.min(1, (t - min) / (max - min || 1)));
+  const stops = [
+    [4,   102, 200],
+    [72,  202, 228],
+    [82,  183, 136],
+    [249, 199, 79],
+    [243, 114, 44],
+    [230, 57,  70],
+  ];
+  const idx = ratio * (stops.length - 1);
+  const i = Math.min(Math.floor(idx), stops.length - 2);
+  const f = idx - i;
+  const c = stops[i].map((v, j) => Math.round(v + f * (stops[i+1][j] - v)));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function dibujar(pixels) {
+  const min = Math.min(...pixels);
+  const max = Math.max(...pixels);
+  const avg = pixels.reduce((a, b) => a + b, 0) / pixels.length;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      ctx.fillStyle = tempToColor(pixels[r * 8 + c], min, max);
+      ctx.fillRect(c, r, 1, 1);
+    }
+  }
+  document.getElementById('v-min').textContent = min.toFixed(1);
+  document.getElementById('v-max').textContent = max.toFixed(1);
+  document.getElementById('v-avg').textContent = avg.toFixed(1);
+}
+
+async function conectar() {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    running = true;
+    document.getElementById('btn-connect').style.display = 'none';
+    document.getElementById('btn-disconnect').style.display = 'inline-block';
+    setStatus('Conectado — leyendo sensor...', 'ok');
+    leer();
+  } catch (e) {
+    setStatus('Error al conectar: ' + e.message, 'err');
+  }
+}
+
+async function leer() {
+  const decoder = new TextDecoderStream();
+  port.readable.pipeTo(decoder.writable);
+  reader = decoder.readable.getReader();
+  let buffer = '';
+  while (running) {
+    try {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      const lineas = buffer.split('\n');
+      buffer = lineas.pop();
+      for (const linea of lineas) {
+        const vals = linea.trim().split(',').map(Number).filter(v => !isNaN(v));
+        if (vals.length === 64) dibujar(vals);
+      }
+    } catch (e) { break; }
+  }
+}
+
+async function desconectar() {
+  running = false;
+  if (reader) await reader.cancel();
+  if (port) await port.close();
+  document.getElementById('btn-connect').style.display = 'inline-block';
+  document.getElementById('btn-disconnect').style.display = 'none';
+  setStatus('Desconectado.', '');
+}
+
+function setStatus(msg, cls) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = cls;
+}
+</script>
+</body>
+</html>
